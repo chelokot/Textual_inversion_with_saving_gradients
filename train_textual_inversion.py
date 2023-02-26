@@ -519,6 +519,8 @@ def main():
     progress_bar.set_description("Steps")
     global_step = 0
 
+    session = []
+
     for epoch in range(args.num_train_epochs):
         text_encoder.train()
         for step, (batch, timesteps) in enumerate(train_dataloader):
@@ -550,14 +552,20 @@ def main():
                 # embeddings for the concept, as we only want to optimize the concept embeddings
                 if accelerator.num_processes > 1:
                     grads = text_encoder.module.get_input_embeddings().weight.grad
+                    embeddings = text_encoder.module.get_input_embeddings().weight
                 else:
                     grads = text_encoder.get_input_embeddings().weight.grad
+                    embeddings = text_encoder.get_input_embeddings().weight
                 
 
                 # Get the index for tokens that we want to zero the grads for
                 index_grads_to_zero = torch.ones(len(tokenizer), dtype=torch.bool).to(grads.device)
                 index_grads_to_zero[placeholder_token_ids] = False
                 grads.data[index_grads_to_zero, :] = grads.data[index_grads_to_zero, :].fill_(0)
+
+                print(embeddings.shape, placeholder_token_ids)
+                print(embeddings[placeholder_token_ids, :].detach().shape, grads.data[placeholder_token_ids, :].shape, step)
+                session += [(embeddings[placeholder_token_ids, :].detach(), grads.data[placeholder_token_ids, :])]
 
                 optimizer.step()
                 lr_scheduler.step()
@@ -578,6 +586,9 @@ def main():
                 break
 
         accelerator.wait_for_everyone()
+        import pickle
+        with open(f'session{epoch}.pickle', 'wb') as handle:
+            pickle.dump(session, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
     # Create the pipeline using using the trained modules and save it.
     if accelerator.is_main_process:
